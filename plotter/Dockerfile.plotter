@@ -1,0 +1,69 @@
+#FROM regproxy.graemes.cloud/dockerhub/library/debian:10
+#FROM regproxy.graemes.cloud/dockerhub/library/ubuntu:latest as chia-builder
+FROM ubuntu:latest as chia-builder
+
+ARG BRANCH
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq python3 ansible tar bash ca-certificates git openssl unzip wget python3-pip sudo acl build-essential python3-dev python3.8-venv python3.8-distutils apt nfs-common python-is-python3 cmake libsodium-dev g++
+
+RUN echo "cloning ${BRANCH}"
+RUN git clone --branch ${BRANCH} https://github.com/Chia-Network/chia-blockchain.git \
+&& cd chia-blockchain \
+&& git submodule update --init mozilla-ca \
+&& chmod +x install.sh 
+
+WORKDIR /chia-blockchain
+
+COPY setup.patch setup.patch
+RUN patch -p1 < setup.patch
+
+RUN /usr/bin/sh ./install.sh
+
+#WORKDIR /chia-blockchain
+RUN . ./activate \
+&& pip install --force-reinstall git+https://github.com/ericaltendorf/plotman@development \
+&& deactivate
+#&& pip install --force-reinstall git+https://github.com/altendky/plotman@custom_archive \
+#&& pip install --force-reinstall git+https://github.com/ericaltendorf/plotman@development
+#&& pip install --force-reinstall git+https://github.com/ericaltendorf/plotman@development \
+#&& sed -i.bak 's/--compress-level=0/--preallocate --compress-level=0/g' /chia-blockchain/venv/lib/python3.8/site-packages/plotman/archive.py \
+#&& deactivate
+
+WORKDIR /
+RUN git clone https://github.com/madMAx43v3r/chia-plotter.git  \
+&& cd chia-plotter \
+&& git submodule update --init \
+&& ./make_devel.sh
+
+FROM regproxy.graemes.cloud/dockerhub/library/ubuntu:latest as build-image
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+&& DEBIAN_FRONTEND=noninteractive apt-get install -y curl jq python3 python3.8-venv python3.8-distutils ca-certificates tzdata vim ssh less rsync git tmux libsodium23 \
+&& apt-get clean all \
+&& rm -rf /var/lib/apt/lists
+
+COPY --from=chia-builder /chia-blockchain /chia-blockchain
+COPY --from=chia-builder /chia-plotter/build /chia-plotter
+
+RUN groupadd -g 10001 chia
+RUN useradd -m -u 10001 -g 10001 chia
+
+RUN mkdir -p /data/chia/tmp \
+&& mkdir -p /data/chia/plots \
+&& mkdir -p /data/chia/logs
+
+VOLUME ["/data/chia/tmp","/data/chia/plots","/data/chia/logs"]
+
+RUN chown -R chia:chia /chia-blockchain \
+&& chown -R chia:chia /chia-plotter \
+&& chown -R chia:chia /data/chia
+
+WORKDIR /chia-blockchain
+USER chia
+
+ENV VIRTUAL_ENV="/chia-blockchain/venv"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+#ENTRYPOINT ["bash"]
+CMD ["/bin/bash", "-c", "trap : TERM INT; sleep infinity & wait" ]
+#
